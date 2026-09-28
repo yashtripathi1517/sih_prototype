@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ANPR Trajectory Tracking - SIH26127</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+</head>
+
+<body class="bg-gray-100">
+    <div class="container mx-auto p-8">
+        <h1 class="text-3xl font-bold mb-8 text-blue-600">🚗 ANPR Trajectory Tracking</h1>
+        <p class="mb-4 text-gray-600">Smart India Hackathon 2026 - SIH26127</p>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-4 gap-4 mb-8" id="stats-container">
+            <div class="bg-white p-4 rounded shadow">
+                <p class="text-gray-600">Total Events</p>
+                <p class="text-2xl font-bold" id="total-events">-</p>
+            </div>
+            <div class="bg-white p-4 rounded shadow">
+                <p class="text-gray-600">Vehicles Tracked</p>
+                <p class="text-2xl font-bold" id="total-vehicles">-</p>
+            </div>
+            <div class="bg-white p-4 rounded shadow">
+                <p class="text-gray-600">Active Cameras</p>
+                <p class="text-2xl font-bold" id="total-cameras">-</p>
+            </div>
+            <div class="bg-white p-4 rounded shadow">
+                <p class="text-gray-600">Alerts Generated</p>
+                <p class="text-2xl font-bold" id="total-alerts">-</p>
+            </div>
+        </div>
+
+        <!-- Search -->
+        <div class="bg-white p-6 rounded shadow mb-8">
+            <h2 class="text-xl font-semibold mb-4">🔍 Search Vehicle</h2>
+            <div class="flex gap-4">
+                <input type="text" id="plate-input" placeholder="Enter plate number (e.g., UP16AB1234)"
+                    class="flex-1 p-2 border rounded">
+                <button onclick="searchVehicle()" class="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700">
+                    Search
+                </button>
+            </div>
+        </div>
+
+        <!-- Map -->
+        <div class="bg-white p-6 rounded shadow mb-8">
+            <h2 class="text-xl font-semibold mb-4">📍 Vehicle Trajectory</h2>
+            <div id="map" class="h-96 rounded"></div>
+        </div>
+
+        <!-- Trajectory Details -->
+        <div class="bg-white p-6 rounded shadow mb-8" id="trajectory-details" style="display:none;">
+            <h2 class="text-xl font-semibold mb-4">📊 Trajectory Details</h2>
+            <div class="grid grid-cols-4 gap-4">
+                <div>
+                    <p class="text-gray-600">Distance</p>
+                    <p class="text-2xl font-bold" id="distance">-</p>
+                </div>
+                <div>
+                    <p class="text-gray-600">Avg Speed</p>
+                    <p class="text-2xl font-bold" id="avg-speed">-</p>
+                </div>
+                <div>
+                    <p class="text-gray-600">Max Speed</p>
+                    <p class="text-2xl font-bold" id="max-speed">-</p>
+                </div>
+                <div>
+                    <p class="text-gray-600">Stops</p>
+                    <p class="text-2xl font-bold" id="stops">-</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Alerts -->
+        <div class="bg-white p-6 rounded shadow">
+            <h2 class="text-xl font-semibold mb-4">🚨 Recent Alerts</h2>
+            <table class="w-full">
+                <thead>
+                    <tr class="border-b">
+                        <th class="text-left py-2">Plate Number</th>
+                        <th class="text-left py-2">Pattern Type</th>
+                        <th class="text-left py-2">Confidence</th>
+                        <th class="text-left py-2">Message</th>
+                    </tr>
+                </thead>
+                <tbody id="alerts-table"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([28.6139, 77.2090], 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        const cameraLocations = {
+            'Cam-001': [28.6139, 77.2090],
+            'Cam-002': [28.6127, 77.2295],
+            'Cam-003': [28.5672, 77.2100],
+            'Cam-004': [28.6517, 77.2219],
+            'Cam-005': [28.5355, 77.3910]
+        };
+
+        // Load stats
+        async function loadStats() {
+            const response = await fetch('http://localhost:8000/api/v1/stats');
+            const stats = await response.json();
+            document.getElementById('total-events').textContent = stats.total_events;
+            document.getElementById('total-vehicles').textContent = stats.total_vehicles;
+            document.getElementById('total-cameras').textContent = stats.total_cameras;
+            document.getElementById('total-alerts').textContent = stats.total_alerts;
+        }
+
+        // Search vehicle
+        async function searchVehicle() {
+            const plate = document.getElementById('plate-input').value;
+            if (!plate) return alert('Enter plate number');
+
+            try {
+                const response = await fetch(`http://localhost:8000/api/v1/trajectory/${plate}`);
+                if (!response.ok) throw new Error('Not found');
+                const trajectory = await response.json();
+
+                // Show details
+                document.getElementById('trajectory-details').style.display = 'block';
+                document.getElementById('distance').textContent = trajectory.distance_km + ' km';
+                document.getElementById('avg-speed').textContent = trajectory.avg_speed_kmh + ' km/h';
+                document.getElementById('max-speed').textContent = trajectory.max_speed_kmh + ' km/h';
+                document.getElementById('stops').textContent = trajectory.stops_count;
+
+                // Clear map
+                map.eachLayer((layer) => {
+                    if (layer instanceof L.Marker) map.removeLayer(layer);
+                });
+
+                // Add markers
+                const route = trajectory.route;
+                const latlngs = route.map(r => cameraLocations[r.camera_id]).filter(l => l);
+
+                route.forEach((r, i) => {
+                    const loc = cameraLocations[r.camera_id];
+                    if (loc) {
+                        L.marker(loc).addTo(map)
+                            .bindPopup(`<b>${r.camera_id}</b><br>${r.timestamp}`);
+                    }
+                });
+
+                // Draw polyline
+                if (latlngs.length > 1) {
+                    L.polyline(latlngs, { color: 'blue', weight: 4 }).addTo(map);
+                    map.fitBounds(L.polyline(latlngs).getBounds());
+                }
+
+            } catch (error) {
+                alert('Vehicle not found. Try: UP16AB1234');
+            }
+        }
+
+        // Load alerts
+        async function loadAlerts() {
+            const response = await fetch('http://localhost:8000/api/v1/alerts');
+            const alerts = await response.json();
+
+            const tbody = document.getElementById('alerts-table');
+            tbody.innerHTML = alerts.map(alert => `
+                <tr class="border-b">
+                    <td class="py-2 font-mono">${alert.plate_number}</td>
+                    <td class="py-2">
+                        <span class="px-2 py-1 rounded text-sm ${alert.pattern_type === 'stalking' ? 'bg-red-100 text-red-800' :
+                    alert.pattern_type === 'high_speed' ? 'bg-orange-100 text-orange-800' :
+                        'bg-blue-100 text-blue-800'
+                }">
+                            ${alert.pattern_type}
+                        </span>
+                    </td>
+                    <td class="py-2">${(alert.confidence * 100).toFixed(1)}%</td>
+                    <td class="py-2 text-gray-600">${alert.details.message || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Load on page load
+        loadStats();
+        loadAlerts();
+    </script>
+</body>
+
+</html>
